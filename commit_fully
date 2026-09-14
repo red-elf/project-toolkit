@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# commit_fully — Redirects to commit-fully (underscore variant for compatibility)
+
+exec "$(dirname "${BASH_SOURCE[0]}")/commit-fully" "$@"

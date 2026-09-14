@@ -9,8 +9,8 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR"
+# Use current working directory as project root, or override with COMMIT_FULLY_ROOT env var
+PROJECT_ROOT="${COMMIT_FULLY_ROOT:-$(pwd)}"
 
 export SUBMODULES_HOME="$PROJECT_ROOT"
 
@@ -94,16 +94,25 @@ ensure_on_branch() {
     return 0
 }
 
-# Get immediate submodules (not recursive) for a given path
-get_immediate_submodules() {
-    local base_path="$1"
-    cd "$base_path"
-    # Only get direct submodules, not recursive - filter out . and ..
-    git submodule status 2>/dev/null | awk '{print $2}' | grep -v '^\.$' | grep -v '^\./$' | sort -u
+# Check if repo has any changes (staged, unstaged, or untracked)
+has_changes() {
+    # Check staged changes
+    if ! git diff --cached --quiet; then
+        return 0
+    fi
+    # Check unstaged changes
+    if ! git diff --quiet; then
+        return 0
+    fi
+    # Check untracked files (excluding standard ignores)
+    if git status --porcelain | grep -q '^??'; then
+        return 0
+    fi
+    return 1
 }
 
-# Commit and push a single repository
-commit_and_push_repo() {
+# Commit all changes including untracked files
+commit_all_changes() {
     local repo_path="$1"
     local commit_msg="${2:-}"
     
@@ -120,8 +129,8 @@ commit_and_push_repo() {
         return 1
     fi
     
-    # Check for changes
-    if git diff --quiet && git diff --cached --quiet; then
+    # Check for any changes (staged, unstaged, or untracked)
+    if ! has_changes; then
         log_info "No changes to commit in $(basename "$repo_path")"
         return 0
     fi
@@ -134,8 +143,9 @@ commit_and_push_repo() {
         msg="Auto-commit $session_id"
     fi
     
-    log_info "Committing changes in $(basename "$repo_path") with message: $msg"
+    log_info "Committing all changes in $(basename "$repo_path") with message: $msg"
     
+    # Add all files including untracked
     if git add -A; then
         if git commit -m "$msg"; then
             log_success "Committed successfully"
@@ -148,18 +158,35 @@ commit_and_push_repo() {
         return 1
     fi
     
+    return 0
+}
+
+# Commit and push a single repository
+commit_and_push_repo() {
+    local repo_path="$1"
+    local commit_msg="${2:-}"
+    
+    if ! commit_all_changes "$repo_path" "$commit_msg"; then
+        return 1
+    fi
+    
+    cd "$repo_path" || {
+        log_error "Failed to cd to $repo_path"
+        return 1
+    }
+    
     # Push to all upstreams using the project's push_all script
-    if [ -f "$PROJECT_ROOT/Upstreamable/push_all" ]; then
+    if [ -f "$PROJECT_ROOT/push_all" ]; then
         log_info "Pushing to all upstreams..."
-        if bash "$PROJECT_ROOT/Upstreamable/push_all"; then
+        if bash "$PROJECT_ROOT/push_all"; then
             log_success "Pushed to all upstreams"
         else
             log_error "Push to upstreams failed"
             return 1
         fi
-    elif [ -f "$repo_path/Upstreamable/push_all" ]; then
+    elif [ -f "$repo_path/push_all" ]; then
         log_info "Pushing to all upstreams (local)..."
-        if bash "$repo_path/Upstreamable/push_all"; then
+        if bash "$repo_path/push_all"; then
             log_success "Pushed to all upstreams"
         else
             log_error "Push to upstreams failed"
@@ -179,6 +206,14 @@ commit_and_push_repo() {
     fi
     
     return 0
+}
+
+# Get immediate submodules (not recursive) for a given path
+get_immediate_submodules() {
+    local base_path="$1"
+    cd "$base_path"
+    # Only get direct submodules, not recursive - filter out . and ..
+    git submodule status 2>/dev/null | awk '{print $2}' | grep -v '^\.$' | grep -v '^\./$' | sort -u
 }
 
 # Process submodules for a given repo (one level only)
